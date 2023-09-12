@@ -1,0 +1,387 @@
+---
+title: "Irrigation Elasticities and Shocks for SIMPLE-G derived by mrwater"
+author: "Felicitas Beier"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r Setup, include = FALSE}
+# R markdown set-up
+knitr::opts_chunk$set(echo = TRUE)
+
+# mr universe functions
+library(madrat)
+library(magclass)
+library(mrwater)
+library(mrcommons)
+
+# raster functions 
+library(raster)
+library(sp)
+
+# terra functions
+library(terra)
+library(sf) 
+
+# plot functions
+library(mrwaterplots)
+library(ggplot2)
+library(ggpubr)
+library(luplot)
+
+# color scales
+library(RColorBrewer)
+
+# tables
+library(xtable) # latex
+
+```
+
+```{r Settings0, include = FALSE, echo = FALSE}
+version  <- "SIMPLEopt_2023_09_04"
+year     <- "y2010"
+scenario <- "ssp2"
+efp      <- "off"
+
+# Path
+filepath       <- paste0(getwd(), "/Data/")
+inputdatapath  <- paste0(getwd(), "/Data/", version, "/")
+outputdatapath <- paste0(getwd(), "/Outputs/", version, "/")
+
+# Look at color scales from ColorBrewer
+# display.brewer.all(colorblindFriendly = TRUE)
+
+```
+
+```{r PREPAREplotmasks, include = FALSE, echo = FALSE}
+# choose projection
+projection   <- "+proj=eqearth +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+ylim         <- c(-6500000, 8300000)
+xlim         <- c(-12577316, 15581284)
+
+colNA        <- "#d9d9d9"
+
+# Get land mask and country borders
+tmp            <- toolPrepareLandMask(projection = projection)
+landMask       <- tmp$landMask
+worldCountries <- tmp$worldCountries
+```
+
+## Introduction
+Here, we assess the data from mrwater for an analysis of environmental flow protection with SIMPLE-G. 
+We further prepare all mrwater output data for further processing in SIMPLE-G.
+The first part of this document visualizes the outputs from mrwater at gridded level. 
+The second part processes the data to derive elasticities for SIMPLE-G and transforms the data to netcdf files. 
+
+```{r ReadData, include = FALSE, echo = FALSE}
+# Environmental Flow Requirements (as share of discharge that has to stay in the river)
+EFRshare <- collapseNames(read.magpie(paste0(inputdatapath, "EFRshare.mz"))[, , "EFR"])
+
+# Current cropland area
+croparea    <- collapseNames(read.magpie(paste0(inputdatapath, "croparea.mz")))
+croparea_rf <- collapseNames(croparea[, , "rainfed"])
+croparea_ir <- collapseNames(croparea[, , "irrigated"])
+cropmix_rf  <- read.magpie(paste0(inputdatapath, "cropmix_rf.mz"))
+cropmix_ir  <- read.magpie(paste0(inputdatapath, "cropmix_ir.mz"))
+cropmix_tot <- read.magpie(paste0(inputdatapath, "cropmix_tot.mz"))
+croplist    <- getItems(croparea_rf, dim = "crop")
+
+# Crop-specific rainfed and irrigated yields
+yields <- read.magpie(paste0(inputdatapath, "yields.mz"))
+yld_ir <- collapseNames(yields[, , "irrigated"])[, , croplist]
+yld_rf <- collapseNames(yields[, , "rainfed"])[, , croplist]
+
+# Currently irrigated crop area:
+comAgArea <- collapseNames(read.magpie(paste0(inputdatapath, "comAgArea.mz"))[, , scenario][, , efp])
+comAgArea <- dimSums(comAgArea, dim = "crop")
+PIA_IRR   <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_IRR.mz"))[, , scenario][, , efp])
+# check:
+if (any(round(comAgArea - PIA_IRR, digits = 6) != 0)) {
+  warning("Something went wrong in the committed agricultural iteration of mrwater. 
+       Please check.")
+}
+
+# Currently irrigation water withdrawal:
+comAgWat <- collapseNames(read.magpie(paste0(inputdatapath, "comAgWat.mz"))[, , "withdrawal"][, , scenario][, , efp])
+comAgWat <- dimSums(comAgWat, dim = "crop")
+PIWW_IRR <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_IRR.mz"))[, , "wat_ag_ww"][, , scenario][, , efp])
+# check:
+if (any(round(comAgWat - PIWW_IRR, digits = 6) != 0)) {
+  warning("Something went wrong in the committed agricultural iteration of mrwater. 
+       Please check.")
+}
+
+# Irrigation potentials:
+# Potential irrigation water withdrawals (on current cropland) [in mio. m3]
+PIWW_CUR <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_CUR.mz"))[, , "wat_ag_ww"][, , scenario])
+# Potentially irrigated area (on current cropland)
+PIA_CUR   <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_CUR.mz"))[, , scenario])
+
+```
+
+## Environmental Flow Requirements
+In the version/setting of mrwater that was used for this analysis, environmental flow requirements are calculated based on the the Variable Month Flow (VMF) Method following Pastor et al. (2014).
+
+The following graph shows the share of discharge per grid cell around the year 2010 that has to be reserved for the environment to keep aquatic and riverine ecosystems in a fair condition. The value ranges between 30% and 40% of discharge to be preserved for the environment.
+
+```{r plotEFRShare, include = FALSE, echo = FALSE}
+legendtitle  <- "Share of discharge"
+legendlimit  <- c(0.3, 0.4)
+legendbreaks <- seq(0.3, 0.4, 0.02)
+legendcolor  <- brewer.pal(length(legendbreaks)-1, "Greens")
+
+# Share fulfilled with local water resources
+plotMap(x = EFRshare,
+        name = "EFRshr",
+        title = paste0("Share of Discharge that has to be preserved for the Environment"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = legendtitle)
+
+```
+```{r EFRshrPlotDisplay, echo = FALSE, fig.cap = "Share of Discharge that has to be reserved for the Environment", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\EFRshr.png"))
+```
+
+This is the underlying data that we want to apply as shock to SIMPLE-G. It indirectly affects the price elasticity of surface water through a reduction of potential irrigation water withdrawals (PIWW), i.e. the asymptode of the surface water supply function. 
+
+Not every location would be affected by the water limitation because many areas have plenty of water available that could be used for irrigation without violating environmental flows. However, in some local hotspots water withdrawals would have to be reduced to maintain a functioning acquatic and riverine ecosystem. 
+
+Here are summary statistics on gridded PIWW (in mio. m3): 
+```{r summaryPIWW, include = TRUE, echo = FALSE}
+print("Without environmental flow protection:")
+summary(PIWW_CUR[, , "off"])
+print("With environmental flow protection:")
+summary(PIWW_CUR[, , "on"])
+```
+```{r plotPIWW, include = FALSE, echo = FALSE}
+min <- min(PIWW_CUR)
+max <- floor(max(PIWW_CUR/1000))*1000
+legendlimit  <- c(min, max)
+legendbreaks <- seq(min, max, max/8)
+legendcolor  <- brewer.pal(length(legendbreaks)-1, "Blues")
+
+# PIWW_CUR given in mio. m^3
+plotMap(x = PIWW_CUR[, , "off"],
+        name = "PIWW_off",
+        title = paste0("Potential Irrigation Water Withdrawal"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "m3")
+
+# PIWW_CUR given in mio. m^3
+plotMap(x = PIWW_CUR[, , "on"],
+        name = "PIWW_on",
+        title = paste0("Potential Irrigation Water Withdrawal under EFP"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "m3")
+
+
+# Reduction in PIWW through EFP (in terms of m3)
+diff <- PIWW_CUR[, , "on"] - PIWW_CUR[, , "off"]
+diff[diff == 0] <- NA
+
+min <- -200
+max <- 200
+legendlimit  <- c(min, max)
+legendbreaks <- seq(min, max, max/4)
+legendcolor  <- brewer.pal(length(legendbreaks)-1, "RdYlBu")
+
+plotMap(x = diff,
+        name = "changeEFP",
+        title = paste0("Change in Water Availability through EFP"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "m3")
+
+print(paste0("Globally, potential irrigation water withdrawals would decrease by ", (-1) * round(sum(diff, na.rm = TRUE) / 1000), "km3"))
+
+# Make graph with current violations
+# (where today's use is > max. PIWW under EFP)
+
+summary(PIWW_CUR[, , "off"] - PIWW_IRR)
+summary(PIWW_CUR[, , "on"] - PIWW_IRR)
+
+
+violations <- PIWW_CUR[, , "on"] - PIWW_IRR
+violations[violations > 0] <- 0
+violations[violations == 0] <- NA
+plotmap2(toolLPJarrayToMAgPIEmap(violations))
+
+isViolated <- violations
+isViolated[isViolated < 0] <- 1
+plotmap2(toolLPJarrayToMAgPIEmap(isViolated), midcol = "darkred")
+
+```
+
+The following two maps visualize the volume of PIWW for the two scenarios: 
+
+```{r PIWWoff, echo = FALSE, fig.cap = "Potential Irrigation Water Withdrawal (without EFP)", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\PIWW_off.png"))
+```
+
+```{r PIWWon, echo = FALSE, fig.cap = "Potential Irrigation Water Withdrawal (with EFP)", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\PIWW_on.png"))
+```
+
+Note to Iman: These two could be inserted as different asymptodes in SIMPLE-G. 
+
+The difference between the two scenarios (reflecting the change in the maximum water withdrawal volume) is shown in the following figure: 
+
+```{r changeEFP, echo = FALSE, fig.cap = "Change in PIWW through EFP", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\changeEFP.png"))
+```
+
+
+For SIMPLE-G, the EFP shock is calculated as the difference of PIWW under environmental flow protection and PIWW without limits on withdrawals as a percentage change. 
+
+```{r EFPshock, include = FALSE, echo = TRUE}
+efpShock <- ifelse(PIWW_CUR[, , "off"] > 0, 
+                     (PIWW_CUR[, , "on"] - PIWW_CUR[, , "off"]) / PIWW_CUR[, , "off"] * 100,
+                   0)
+efpShock[efpShock > 100] <- 100
+```
+
+Note: Some areas see an extreme (up to 52577%) increase in PIWW. I have capped them to 100% (for visualization purposes). These are areas where under no protection, no water comes through anymore, so nothing can be used. Should it be capped at a different value/ not capped at all for the SIMPLE-G analysis?
+
+```{r EFPshockPlot, include = FALSE, echo = FALSE}
+min <- -100
+max <- 100
+legendlimit  <- c(min, max)
+legendbreaks <- seq(min, max, max/4)
+legendcolor  <- brewer.pal(length(legendbreaks)-1, "RdBu")
+
+# For visualization: locations where there is no change are set to NA
+efpShock[efpShock == 0] <- NA
+
+plotMap(x = efpShock,
+        name = "efpShock",
+        title = paste0("Percentage Change in PIWW through EFP"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "")
+```
+
+The percentage change is displayed here: 
+```{r PercChangeEFP, echo = FALSE, fig.cap = "Percentage Change in PIWW through EFP", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\efpShock.png"))
+```
+
+
+## Price Elasticity of Surface Water
+
+We derive the price elasticity of surface water using PIWW on current cropland (without environmental flow protection), i.e. the maximum volume of surface water that can be withdrawn in a certain grid cell and the current withdrawal for irrigation using the following formula:
+```{r SurfaceWaterEquation, include = FALSE, echo = TRUE}
+# Surface water elasticity (without protection)
+epsilonOFF <- 1 - (PIWW_IRR / PIWW_CUR[, , "off"])
+```
+Values of 0 indicate that there is no further potential to withdraw more water beyond the current level (perfectly inelastic). Values of 1 indicate that plenty of water is still available and more water can be used.
+The following graph visualizes the values on a global map:
+```{r SurfaceWaterPlot, include = FALSE, echo = FALSE}
+# Plot SWElasiticity 
+min <- 0
+max <- 1
+legendlimit  <- c(min, max)
+legendbreaks <- seq(min, max, max/8)
+legendcolor  <- rev(brewer.pal(length(legendbreaks)-1, "Purples")) # RdYlBu YlOrRd
+
+plotMap(x = epsilonOFF,
+        name = "swElasticityOFF",
+        title = paste0("Surface Water Elasticity"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "")
+```
+```{r SWelasticityPlotBaseline, include = FALSE, echo = FALSE, fig.cap = "Surface Water Elasticity (Baseline)", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\swElasticityOFF.png"))
+```
+
+The price elasticity changes when water withdrawals are restricted in line with Environmental Flow Protection (EFP). 
+
+```{r SurfaceWaterPlotEFP, include = FALSE, echo = FALSE}
+# Surface water elasticity
+epsilonON <- 1 - (PIWW_IRR / PIWW_CUR[, , "on"])
+# Plot SWElasiticity 
+min <- 0
+max <- 1
+legendlimit  <- c(min, max)
+legendbreaks <- seq(min, max, max/8)
+legendcolor  <- rev(brewer.pal(length(legendbreaks)-1, "Purples")) # RdYlBu YlOrRd
+
+plotMap(x = epsilonON,
+        name = "swElasticityON",
+        title = paste0("Surface Water Elasticity"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "")
+```
+
+```{r SWelasticityPlotEFP, include = FALSE, echo = FALSE, fig.cap = "Surface Water Elasticity (EFP Scenario)", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\swElasticityON.png"))
+```
+
+
+## Transformation Elasticity of Rainfed to Irrigated Land
+
+The proxy for the gridded transformation elasticity of rainfed to irrigated land should give an indication of how easy it is to transform rainfed to irrigated area.
+This depends on both the distance of the currently irrigated area to the maximum potentially irrigated area as well as on the yield gain through irrigation. 
+
+Note: Include calculation and visualization here.
+
+```{r TransformationElasticity, include = FALSE, echo = FALSE}
+
+((PIA_CUR[, , "off"] - PIA_IRR) * cropmix_rf) * (yld_ir - yld_rf) / yld_rf * croparea_rf
+
+tau <- PIA_IRR / PIA_CUR[, , "off"]
+plotmap2(toolLPJarrayToMAgPIEmap(tau), title = "Transformation Elasticity",
+         sea = FALSE)
+
+```
+
+
+## Generation of Inputs for SIMPLE-G
+
+The main outputs for a first analysis are: 
+
+* surface water elasticity for baseline case (`swElasticity.nc`)
+* environmental flow policy shock as percentage change (note: capped) (`efpShockpc.nc`)
+
+The secondary outputs (depending on how we choose to implement it) are: 
+
+* surface water elasticity for environmental flow protection case (`swElasticityEFP.nc`)
+* the asymptode (maximum) for the two scenarios (`PIWW.nc` and `PIWWefp.nc`)
+* current irrigation water withdrawal (`currentWW.nc`)
+
+
+```{r outputs4SIMPLEG, include = FALSE, echo = FALSE}
+# Surface Water Elasticity 
+write.magpie(epsilonOFF, file_name = paste0(outputdatapath,  "swElasticity.nc"))
+write.magpie(epsilonON, file_name = paste0(outputdatapath, "swElasticityEFP.nc"))
+
+# Environmental Flow Protection Shock 
+# (percentage change of PIWW caused by EFP)
+write.magpie(efpShock, file_name = paste0(outputdatapath, "efpShockpc.nc"))
+
+# Current withdrawals
+write.magpie(PIWW_IRR, file_name = paste0(outputdatapath, "currentWW.nc"))
+
+# Potential withdrawals
+write.magpie(PIWW_CUR[, , "off"], file_name = paste0(outputdatapath, "PIWW.nc"))
+write.magpie(PIWW_CUR[, , "on"], file_name = paste0(outputdatapath, "PIWWefp.nc"))
+
+```

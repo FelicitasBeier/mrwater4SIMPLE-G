@@ -1,0 +1,205 @@
+---
+title: "Transformation Elasticity for regional version of SIMPLE derived by mrwater"
+author: "Felicitas Beier"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r Setup, include = FALSE}
+# R markdown set-up
+knitr::opts_chunk$set(echo = TRUE)
+
+# Data frame operations from tidyverse
+library(tibble)
+
+# mr universe functions
+library(madrat)
+library(magclass)
+library(mrwater)
+```
+
+```{r Settings0, include = FALSE}
+version  <- "SIMPLEopt_2023_09_04"
+year     <- "y2010"
+scenario <- "ssp2"
+efp      <- "off"
+
+# Path
+filepath       <- paste0(getwd(), "/Data/")
+inputdatapath  <- paste0(getwd(), "/Data/", version, "/")
+outputdatapath <- paste0(getwd(), "/Outputs/", version, "/")
+
+```
+
+## Introduction
+Here, we assess use data from mrwater to derive the transformation elasticity between rainfed and irrigated land at an aggregated scale. 
+
+```{r ReadData, include = FALSE, echo = FALSE}
+# River structure
+rs <- readRDS(system.file("extdata/riverstructure_stn_coord.rds",
+                          package = "mrwater"))
+
+# Economic irrigation area potential 
+IrrigAreaEconCUR <- collapseNames(read.magpie(paste0(inputdatapath, "IrrigAreaEconCUR.mz"))[, , efp])
+
+# Yield gain range chosen for the analysis
+gtrange <- getItems(IrrigAreaEconCUR, dim = 3)
+```
+
+
+```{r CreateDataFrames, include = FALSE, echo = FALSE}
+
+# Transform raw data into data frame
+baseData <- as.data.frame(as.array(IrrigAreaEconCUR))
+baseData <- rownames_to_column(baseData, var = "Cell")
+colnames(baseData) <- c("Cell", gtrange)
+baseData <- reshape(baseData, direction = "long",
+                    varying = list(names(baseData)[2:length(names(baseData))]),
+                    idvar = "Cell",
+                    timevar = "YieldGain", times = gtrange,
+                    v.names = "PIA")
+
+# Create country data frame
+ctryData <- as.data.frame(as.array(dimSums(IrrigAreaEconCUR, dim = c("x", "y"))))
+ctryData <- rownames_to_column(ctryData, var = "iso")
+colnames(ctryData) <- c("iso", gtrange)
+ctryData <- reshape(ctryData, direction = "long",
+                    varying = list(names(ctryData)[2:length(names(ctryData))]),
+                    idvar = "iso",
+                    timevar = "YieldGain", times = gtrange,
+                    v.names = "PIA")
+ctryData$YieldGain <- as.integer(ctryData$YieldGain)
+
+
+# Create basin data frame
+tmp <- IrrigAreaEconCUR
+getItems(tmp, dim = 1, raw = TRUE) <- paste(getItems(tmp, dim = 1), rs$endcell, sep = ".")
+bsnData <- as.data.frame(as.array(dimSums(tmp, dim = c(1.1, 1.2, 1.3))))
+bsnData <- rownames_to_column(bsnData, var = "basin")
+colnames(bsnData) <- c("basin", gtrange)
+bsnData <- reshape(bsnData, direction = "long",
+                    varying = list(names(bsnData)[2:length(names(bsnData))]),
+                    idvar = "basin",
+                    timevar = "YieldGain", times = gtrange,
+                    v.names = "PIA")
+bsnData$YieldGain <- as.integer(bsnData$YieldGain)
+
+
+# Identify basins
+basinMap <- read.csv(system.file("extdata/RiverBasinMapping.csv", package = "mrwater"))
+# 3462 some river bains in Nevada; Great Basin?
+# 2538 Columbia river basin? or Pacific Northwest Basin?
+
+# tmp <- IrrigAreaEconCUR
+# tmp[, , ] <- 0
+# tmp[rs$coordinates[rs$endcell==3462], , ] <- 1
+
+# Note: I could not find the Upper Snake River (have a look together with Iman)
+  
+```
+
+# Basin Elasticity
+
+I tried to fit the simulated data (little circles in the graph) to some functional form using a regression. 
+I tried 1/x (red) and a polynomial function (blue). 
+
+```{r BasinHeterogeneity, include = TRUE, echo = FALSE}
+
+basinMap <- read.csv(system.file("extdata/RiverBasinMapping.csv", package = "mrwater"))
+
+basins <- c("4089",  # Colorado
+  "24809", # Guadalquivir
+  "29805", # Orange River
+  "2538",  # Columbia River
+  "9443",  # Mississippi
+  "35804", # Nile
+  "59064", # Chang Jian
+  "50464", # Ganges
+  "44955", # Indus
+  "63145", # Murray 
+  "58181", # Huang He
+  "35257", # Danube
+  "54662", # Mekong
+  "18169", # Parana
+  "43774", # Syr-Darya
+  "43578") # Amu-Darya
+
+
+for(b in basins) {
+  data <- bsnData[bsnData$basin == b,]
+  plot(data$PIA, data$YieldGain,
+     xlab = "Irrigated Area", ylab = "Yield Gain",
+     xlim = c(min(data$PIA), max(data$PIA)),
+     main = basinMap$Basin.Name[basinMap$Endcell==b]
+     )
+  
+  # Fitting a 1/x function
+  reg <- lm(YieldGain ~ I(1/PIA), data = data)
+  curve(reg$coefficients[1] + reg$coefficients[2] * I(1/x),
+        col = "red",
+        xlab = "Irrigated Area", ylab = "Yield Gain",
+        from = min(data$PIA), to = max(data$PIA), 
+        add = TRUE)
+  
+  # Fitting a polynomial function
+  reg <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
+  curve(reg$coefficients[1] + reg$coefficients[2] * x + 
+        reg$coefficients[3] * x^2 + reg$coefficients[4] * x^3,
+      col = "blue",
+      xlab = "Irrigated Area", ylab = "Yield Gain",
+      from = min(data$PIA), to = max(data$PIA), 
+      add = TRUE)
+}
+
+```
+
+Note: I also tried log(x), sqrt(x), x + x^2. They all look worse.
+
+The functional form seems to vary by basin, wich I believe is a bit problematic. 
+There are also completely inelastic basins (like Guadalquivir in Spain). For these, the function could not be fitted, but I think these are special cases for which we just assume completely inelastic demand (elasticity is 0).
+
+Questions:
+How to choose a good data range? (probably country-specific)
+How to choose a good functional form? (seems to be different by country... we need a flexible functional form)
+
+# Country elasticity 
+
+I repeated this exercise for some countries. In that case the functional form 1/x seemed to fit better.
+I still wonder whether this is good enough (see IND, CHN, USA). 
+
+```{r CountryHeterogeneity, include = TRUE, echo = FALSE}
+
+countries <- c("DEU", "FRA", "ESP", "ITA",
+               "USA", "MEX", "BRA",
+               "IND", "CHN", "ZAF")
+
+for(c in countries) {
+  data <- ctryData[ctryData$iso == c,]
+  plot(data$PIA, data$YieldGain,
+     xlab = "Irrigated Area", ylab = "Yield Gain",
+     xlim = c(0, max(data$PIA)),
+     main = c)
+  
+  # Fitting a 1/x function
+  reg <- lm(YieldGain ~ I(1/PIA), data = data)
+  curve(reg$coefficients[1] + reg$coefficients[2] * I(1/x),
+        col = "red",
+        xlab = "Irrigated Area", ylab = "Yield Gain",
+        from = 0, to = max(data$PIA), 
+        add = TRUE)
+  
+  # Fitting a polynomial function
+  # reg <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
+  # curve(reg$coefficients[1] + reg$coefficients[2] * x + 
+  #       reg$coefficients[3] * x^2 + reg$coefficients[4] * x^3,
+  #     col = "blue",
+  #     xlab = "Irrigated Area", ylab = "Yield Gain",
+  #     from = 0, to = max(data$PIA), 
+  #     add = TRUE)
+}
+
+
+```
+
+Do you have better ideas how to approach this exercise? 
+Does the fit y = yield gain, x = irrigated area make sense or should it be the other way around? 

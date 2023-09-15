@@ -1,5 +1,5 @@
 ---
-title: "Transformation Elasticity for regional version of SIMPLE derived by mrwater"
+title: "Transformation Elasticity for regional version of SIMPLE or GTAP or other Equilibrium Models derived by mrwater"
 author: "Felicitas Beier"
 date: "`r Sys.Date()`"
 output: pdf_document
@@ -16,6 +16,10 @@ library(tibble)
 library(madrat)
 library(magclass)
 library(mrwater)
+
+# For reading shape file 
+library(sf)
+
 ```
 
 ```{r Settings0, include = FALSE}
@@ -32,18 +36,58 @@ outputdatapath <- paste0(getwd(), "/Outputs/", version, "/")
 ```
 
 ## Introduction
-Here, we assess use data from mrwater to derive the transformation elasticity between rainfed and irrigated land at an aggregated scale. 
+
+Here, we use data from mrwater to derive the transformation elasticity between rainfed and irrigated land at an aggregated scale. 
+
+The goal is to estimate a function for irrigated area depending on the yield gain through irrigation.
+We know the technical maximum irrigation potential per region (maxIrrigArea), i.e. the potentially irrigated area (PIA) at a yield gain of zero. 
+We want to fit a regression line to determine a continuous functional form that describes the relationship between PIA at different yield gains. 
+
+The advantage of using mrwater is that it models PIA taking water availability and the upstream-downstream relationship of water flows as well as different water uses into account. Furthermore, it uses the information of gridded irrigated and rainfed yields as well as country-level crop prices to determine the yield gain through irrigation. This drives the allocation of areas that can potentially be irrigated. 
+
+We derive for every grid cell several PIA at different yield gain thresholds. These can be summarized at the regional/country-/basin-level resolution in "PIA curves" (supply curves). These PIA curves that depict the maximum area that can potentially be irrigated at different yield gains. 
+These is the modeled data that will be used to determine the relationship. 
+
 
 ```{r ReadData, include = FALSE, echo = FALSE}
-# River structure
+# River structure for mapping to river basins
 rs <- readRDS(system.file("extdata/riverstructure_stn_coord.rds",
                           package = "mrwater"))
 
 # Economic irrigation area potential 
 IrrigAreaEconCUR <- collapseNames(read.magpie(paste0(inputdatapath, "IrrigAreaEconCUR.mz"))[, , efp])
 
+allCountries <- getItems(IrrigAreaEconCUR, dim = "iso")
+allBasins    <- unique(rs$endcell)
+
 # Yield gain range chosen for the analysis
 gtrange <- getItems(IrrigAreaEconCUR, dim = 3)
+```
+
+```{r Shapefile, include = FALSE, echo = FALSE}
+# Shape file provided:
+nameOfShape <- "20230301_gtapv11"
+
+map <- toolGetMappingCoord2Country(pretty = TRUE)
+ 
+# Translate GTAP shape file to mapping to 67420 grid cells (0.5 degree)
+unzip(paste0(nameOfShape, ".zip"), exdir = ".")
+
+shpfile <- st_read(paste0(getwd(), "\\", nameOfShape, ".shp"))
+head(shpfile, n = 4)
+# # Plot it without converting geometry to x, y columns
+# plot(st_geometry(shpfile))
+# #plot(st_geometry(st_centroid(shpfile)), add = TRUE)
+# 
+# 
+# a <- terra::vect(shpfile)
+# b <- aggregate(a, 4, FUN = )
+# 
+# 
+# terra::rasterize(x = sphfile, y = as.raster(IrrigAreaEconCUR))
+
+
+
 ```
 
 
@@ -98,74 +142,117 @@ basinMap <- read.csv(system.file("extdata/RiverBasinMapping.csv", package = "mrw
   
 ```
 
+
+The following graphs show the results for the Colorado river basin
+
+```{r BasinExample, include = TRUE, echo = FALSE}
+
+basinMap <- read.csv(system.file("extdata/RiverBasinMapping.csv", package = "mrwater"))
+
+basins <- "4089"
+
+for(b in basins) {
+  
+  data <- bsnData[bsnData$basin == b, ]
+  plot(data$PIA, data$YieldGain,
+       xlab = "Irrigated Area", ylab = "Yield Gain",
+       xlim = c(min(data$PIA), max(data$PIA)),
+       main = basinMap$Basin.Name[basinMap$Endcell == b])
+}
+
+```
+
+and aggregate to the country-level for the United States
+
+```{r CountryExample, include = TRUE, echo = FALSE}
+
+countries <- "USA"
+
+for(c in countries) {
+  
+  # create data frame for the selected country
+  data <- ctryData[ctryData$iso == c,]
+  
+  # plot modeled data for the selected country
+  plot(data$PIA, data$YieldGain,
+       xlab = "Irrigated Area", ylab = "Yield Gain",
+       xlim = c(0, max(data$PIA)),
+       main = c)
+}
+
+```
+
+
 # Basin Elasticity
 
-I tried to fit the simulated data (little circles in the graph) to some functional form using a regression. 
-I tried 1/x (red) and a polynomial function (blue). 
+I tried to fit the simulated data (little circles in the graph) to different functional forms using a linear regression model with the functional forms:
+
+* y = a + b (1/x) (red line)
+* y = a + b1 x + b2 x^2 + b3 x^3 (blue line)
+
+The following graphs show the results for a selection of different river basins around the world. The show that the elasticities are heterogenous and different functional forms perform better in some river basins than in others.
 
 ```{r BasinHeterogeneity, include = TRUE, echo = FALSE}
 
 basinMap <- read.csv(system.file("extdata/RiverBasinMapping.csv", package = "mrwater"))
 
 basins <- c("4089",  # Colorado
-  "24809", # Guadalquivir
-  "29805", # Orange River
-  "2538",  # Columbia River
-  "9443",  # Mississippi
-  "35804", # Nile
-  "59064", # Chang Jian
-  "50464", # Ganges
-  "44955", # Indus
-  "63145", # Murray 
-  "58181", # Huang He
-  "35257", # Danube
-  "54662", # Mekong
-  "18169", # Parana
-  "43774", # Syr-Darya
-  "43578") # Amu-Darya
+            "24809", # Guadalquivir
+            "29805", # Orange River
+            "2538",  # Columbia River
+            "9443",  # Mississippi
+            "35804", # Nile
+            "59064", # Chang Jian
+            "50464", # Ganges
+            "44955", # Indus
+            "63145", # Murray 
+            "58181", # Huang He
+            "35257", # Danube
+            "54662", # Mekong
+            "18169", # Parana
+            "43774", # Syr-Darya
+            "43578") # Amu-Darya
 
 
 for(b in basins) {
-  data <- bsnData[bsnData$basin == b,]
+  
+  data <- bsnData[bsnData$basin == b, ]
+  
+  # plot modeled data for the selected basin
   plot(data$PIA, data$YieldGain,
-     xlab = "Irrigated Area", ylab = "Yield Gain",
-     xlim = c(min(data$PIA), max(data$PIA)),
-     main = basinMap$Basin.Name[basinMap$Endcell==b]
-     )
+       xlab = "Irrigated Area", ylab = "Yield Gain",
+       xlim = c(0, max(data$PIA)),
+       main = c)
   
   # Fitting a 1/x function
-  reg <- lm(YieldGain ~ I(1/PIA), data = data)
-  curve(reg$coefficients[1] + reg$coefficients[2] * I(1/x),
+  reg1 <- lm(YieldGain ~ I(1/PIA), data = data)
+  curve(reg1$coefficients[1] + reg1$coefficients[2] * I(1/x),
         col = "red",
         xlab = "Irrigated Area", ylab = "Yield Gain",
-        from = min(data$PIA), to = max(data$PIA), 
+        from = 0, to = max(data$PIA), 
         add = TRUE)
   
   # Fitting a polynomial function
-  reg <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
-  curve(reg$coefficients[1] + reg$coefficients[2] * x + 
-        reg$coefficients[3] * x^2 + reg$coefficients[4] * x^3,
-      col = "blue",
-      xlab = "Irrigated Area", ylab = "Yield Gain",
-      from = min(data$PIA), to = max(data$PIA), 
-      add = TRUE)
+  reg2 <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
+  curve(reg2$coefficients[1] + reg2$coefficients[2] * x +
+        reg2$coefficients[3] * x^2 + reg2$coefficients[4] * x^3,
+        col = "blue",
+        xlab = "Irrigated Area", ylab = "Yield Gain",
+        from = 0, to = max(data$PIA),
+        add = TRUE)
 }
 
 ```
 
-Note: I also tried log(x), sqrt(x), x + x^2. They all look worse.
 
-The functional form seems to vary by basin, wich I believe is a bit problematic. 
-There are also completely inelastic basins (like Guadalquivir in Spain). For these, the function could not be fitted, but I think these are special cases for which we just assume completely inelastic demand (elasticity is 0).
+We find that the slope (elasticity) as well as the functional form vary by basin.
 
-Questions:
-How to choose a good data range? (probably country-specific)
-How to choose a good functional form? (seems to be different by country... we need a flexible functional form)
+There are also completely inelastic basins (like Guadalquivir in Spain). For these, the function could not be fitted, for these the elasticity would be 0.
 
-# Country elasticity 
 
-I repeated this exercise for some countries. In that case the functional form 1/x seemed to fit better.
-I still wonder whether this is good enough (see IND, CHN, USA). 
+# Country elasticity
+
+For country-level results, the functional form 1/x outperformed the polynomial.
 
 ```{r CountryHeterogeneity, include = TRUE, echo = FALSE}
 
@@ -174,32 +261,246 @@ countries <- c("DEU", "FRA", "ESP", "ITA",
                "IND", "CHN", "ZAF")
 
 for(c in countries) {
+  
+  # create data frame for the selected country
   data <- ctryData[ctryData$iso == c,]
+  
+  # plot modeled data for the selected country
   plot(data$PIA, data$YieldGain,
-     xlab = "Irrigated Area", ylab = "Yield Gain",
-     xlim = c(0, max(data$PIA)),
-     main = c)
+       xlab = "Irrigated Area", ylab = "Yield Gain",
+       xlim = c(0, max(data$PIA)),
+       main = c)
   
   # Fitting a 1/x function
-  reg <- lm(YieldGain ~ I(1/PIA), data = data)
-  curve(reg$coefficients[1] + reg$coefficients[2] * I(1/x),
+  reg1 <- lm(YieldGain ~ I(1/PIA), data = data)
+  curve(reg1$coefficients[1] + reg1$coefficients[2] * I(1/x),
         col = "red",
         xlab = "Irrigated Area", ylab = "Yield Gain",
         from = 0, to = max(data$PIA), 
         add = TRUE)
   
   # Fitting a polynomial function
-  # reg <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
-  # curve(reg$coefficients[1] + reg$coefficients[2] * x + 
-  #       reg$coefficients[3] * x^2 + reg$coefficients[4] * x^3,
-  #     col = "blue",
-  #     xlab = "Irrigated Area", ylab = "Yield Gain",
-  #     from = 0, to = max(data$PIA), 
-  #     add = TRUE)
+  reg2 <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
+  curve(reg2$coefficients[1] + reg2$coefficients[2] * x +
+        reg2$coefficients[3] * x^2 + reg2$coefficients[4] * x^3,
+        col = "blue",
+        xlab = "Irrigated Area", ylab = "Yield Gain",
+        from = 0, to = max(data$PIA),
+        add = TRUE)
 }
-
 
 ```
 
-Do you have better ideas how to approach this exercise? 
-Does the fit y = yield gain, x = irrigated area make sense or should it be the other way around? 
+
+# Determining the functional form 
+
+The next step is to determine a functional form based on the data.
+
+We would like to determine the transformation elasticity of rainfed to irrigated area based on the model data on PIAs at different yield gain thresholds. 
+
+The goal is to estimate a function for irrigated area depending on the yield gain through irrigation.
+We know the technical maximum irrigation potential per region (maxIrrigArea), i.e. the potentially irrigated area (PIA) at a yield gain of zero. 
+We want to fit a regression line to determine a continuous functional form that describes the relationship between PIA at different yield gains. 
+
+To do so, I would suggest to turn around the axes.
+y = Potentially Irrigated Area (in Mha), and 
+x = Irrigation yield gain (in USD/ha)
+
+The technical potential (maxIrrigArea) is the intercept. 
+
+The functional form would look like:
+
+IrrigArea = MaxIrrigArea + f(YieldGain)
+
+In the following section, I will try to find a suitable functional form and fit a regression using this form. 
+I am considering to force the regression through the intersect. 
+
+INSERT RESULTS HERE.
+
+So far, I have tried around with functional forms like 1 / (value + x). 
+I will try further functions here. 
+
+```{r RegBasins, include = TRUE, echo = FALSE}
+# basinMap <- read.csv(system.file("extdata/RiverBasinMapping.csv", package = "mrwater"))
+# 
+# basins <- c("4089",  # Colorado
+#             "24809", # Guadalquivir
+#             "29805", # Orange River
+#             "2538",  # Columbia River
+#             "9443",  # Mississippi
+#             "35804", # Nile
+#             "59064", # Chang Jian
+#             "50464", # Ganges
+#             "44955", # Indus
+#             "63145", # Murray 
+#             "58181", # Huang He
+#             "35257", # Danube
+#             "54662", # Mekong
+#             "18169", # Parana
+#             "43774", # Syr-Darya
+#             "43578") # Amu-Darya
+# 
+# 
+# for(b in basins) {
+#   
+#   data <- bsnData[bsnData$basin == b, ]
+#   plot(data$YieldGain, data$PIA,
+#        ylab = "Irrigated Area (in Mha)", xlab = "Yield Gain (in USD/ha)",
+#        yaxs = "i", yaxs = "i",
+#        ylim = c(min(data$PIA), max(data$PIA)),
+#        main = basinMap$Basin.Name[basinMap$Endcell == b])
+#   
+#   # Technical maximum (PIWW at yield gain > 0)
+#   techMax <- data$PIA[data$YieldGain == 0]
+#   
+#   reg <- lm(PIA ~ I(1 / ((1/techMax) + YieldGain)), data = data)
+#   
+#   curve(reg$coefficients[[1]] + reg$coefficients[[2]] * I(1 / ((1/techMax) + x)),
+#         col = "pink",
+#        ylab = "Irrigated Area (in Mha)", xlab = "Yield Gain (in USD/ha)",
+#         from = min(data$YieldGain), to = max(data$YieldGain), 
+#         add = TRUE)
+#   
+#   # Center data such that regression goes through y-axis intercept
+#   data$PIA <- data$PIA - techMax
+#   
+#   reg <- lm(PIA ~ 0 + I(1 / ((1/techMax) + YieldGain)), data = data)
+# 
+#   # Transform data back
+#   data$PIA <- data$PIA - techMax
+#   
+#   curve(techMax + reg$coefficients[[1]] * I(1 / ((1/techMax) + x)),
+#         col = "red",
+#        ylab = "Irrigated Area (in Mha)", xlab = "Yield Gain (in USD/ha)",
+#         from = min(data$YieldGain), to = max(data$YieldGain), 
+#         add = TRUE)
+#   
+#   data$YieldGain <- data$YieldGain + 0.00001
+#   reg <- lm(PIA ~ I(1 / YieldGain), data = data)
+#   
+#     curve(reg$coefficients[[1]] + reg$coefficients[[2]] * I(1 / x),
+#         col = "blue",
+#        ylab = "Irrigated Area (in Mha)", xlab = "Yield Gain (in USD/ha)",
+#         from = min(data$YieldGain), to = max(data$YieldGain), 
+#         add = TRUE)
+# 
+#   
+# }
+
+```
+
+
+# Create generic data for aggregated Equilibrium Models
+
+For every country and every basin, we fit both functional forms and provide the parameters and model fit in a data table. 
+These results can be used in equilibrium models that require information on the transformation elasticity of rainfed to irrigated land.
+
+We report the country-level results in `countryElasticities.csv` and basin-level results in `basinElasticities.csv`.
+
+
+```{r CountryResults, include = FALSE, echo = FALSE}
+
+# countries <- allCountries
+# 
+# fct1 <- fct2 <- NULL
+# for(c in countries) {
+#   
+#   # create data frame for the selected country
+#   data <- ctryData[ctryData$iso == c,]
+#   
+#   # cut data when they stay the same for 3 consecutive years?
+#   
+#   
+#   # Fitting a 1/x function
+#   reg1 <- lm(YieldGain ~ I(1/PIA), data = data)
+#   tmp1 <- data.frame(iso = as.character(c),
+#                      adjR2_fct1 = summary(reg1)$adj.r.squared,
+#                      a0_fct1 = reg1$coefficients[1],
+#                      b1_fct1 = reg1$coefficients[2])
+#   fct1 <- rbind(fct1, tmp1)
+#   
+#   # Fitting a polynomial function
+#   reg2 <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
+#   tmp2 <- data.frame(iso = as.character(c),
+#                      adjR2_fct2 = summary(reg2)$adj.r.squared,
+#                      a0_fct2 = reg2$coefficients[1],
+#                      b1_fct2 = reg2$coefficients[2],
+#                      b2_fct2 = reg2$coefficients[3],
+#                      b3_fct2 = reg2$coefficients[4])
+#   fct2 <- rbind(fct2, tmp2)
+#   
+#   # Combine to one data frame
+#   countryOut <- merge(fct1, fct2)
+#   # Save result in csv
+#   write.table(countryOut, file = "countryElasticities.csv", sep = ",", dec = ".")
+# }
+
+```
+
+
+
+```{r BasinResults, include = FALSE, echo = FALSE}
+
+# basins <- allBasins
+
+# Need to solve issue that it is not specified for all basins.
+
+# fct1 <- fct2 <- NULL
+# for(b in basins) {
+#   
+#   # create data frame for the selected basin
+#   data <- bsnData[bsnData$basin == b,]
+#   
+#   # Fitting a 1/x function
+#   if (!all(data$PIA == 0)) {
+#      reg1 <- lm(YieldGain ~ I(1/PIA), data = data)
+#      tmp1 <- data.frame(basin = as.character(b),
+#                          adjR2_fct1 = summary(reg1)$adj.r.squared,
+#                          a0_fct1 = reg1$coefficients[1],
+#                          b1_fct1 = reg1$coefficients[2]) 
+#   } else {
+#      tmp1 <- data.frame(basin = as.character(b),
+#                          adjR2_fct1 = 0,
+#                          a0_fct1 = 0,
+#                          b1_fct1 = 0) 
+#   }
+#   fct1 <- rbind(fct1, tmp1)
+#   
+#   # Fitting a polynomial function
+#   if (!all(data$PIA == 0)) {
+#     reg2 <- lm(YieldGain ~ PIA + I(PIA^2) + I(PIA^3), data = data)
+#     tmp2 <- data.frame(basin = as.character(b),
+#                        adjR2_fct2 = summary(reg2)$adj.r.squared,
+#                        a0_fct2 = reg2$coefficients[1],
+#                        b1_fct2 = reg2$coefficients[2],
+#                        b2_fct2 = reg2$coefficients[3],
+#                        b3_fct2 = reg2$coefficients[4])
+#   } else {
+#     tmp2 <- data.frame(basin = as.character(b),
+#                        adjR2_fct2 = 0,
+#                        a0_fct2 = 0,
+#                        b1_fct2 = 0,
+#                        b2_fct2 = 0,
+#                        b3_fct2 = 0)
+#   }
+#   fct2 <- rbind(fct2, tmp2)
+#   
+#   # Combine to one data frame
+#   basinOut <- merge(fct1, fct2)
+#   # Save result in csv
+#   write.table(basinOut, file = "basinElasticities.csv", sep = ",", dec = ".")
+# }
+
+```
+
+
+# Conclusion 
+
+Main message: don't use a global uniform function and value for the transformation elasticity; better to use modeled data to derive a country- or basin-level relationship and inform the model
+
+
+Remaining questions:
+
+* How to choose a good data range for the fit generically?
+* Does the fit y = yield gain, x = irrigated area make sense or should it be the other way around? 
+* Is there a way to force the function to meet the correct max value (intercept with x with the last point rather than using the intercept parameter estimated?)

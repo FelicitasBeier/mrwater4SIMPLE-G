@@ -73,7 +73,7 @@ We further prepare all mrwater output data for further processing in SIMPLE-G.
 The first part of this document visualizes the outputs from mrwater at gridded level. 
 The second part processes the data to derive elasticities for SIMPLE-G and transforms the data to netcdf files. 
 
-```{r ReadData, include = FALSE, echo = FALSE}
+```{r ReadData, include = TRUE, echo = FALSE}
 # Environmental Flow Requirements (as share of discharge that has to stay in the river)
 EFRshare <- collapseNames(read.magpie(paste0(inputdatapath, "EFRshare.mz"))[, , "EFR"])
 
@@ -94,7 +94,7 @@ yld_rf <- collapseNames(yields[, , "rainfed"])[, , croplist]
 # Currently irrigated crop area:
 comAgArea <- collapseNames(read.magpie(paste0(inputdatapath, "comAgArea.mz"))[, , scenario][, , efp])
 comAgArea <- dimSums(comAgArea, dim = "crop")
-PIA_IRR   <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_IRR.mz"))[, , scenario][, , efp])
+PIA_IRR   <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_IRR_wfGW.mz"))[, , scenario][, , efp])
 # check:
 if (any(round(comAgArea - PIA_IRR, digits = 6) != 0)) {
   warning("Something went wrong in the committed agricultural iteration of mrwater. 
@@ -104,7 +104,7 @@ if (any(round(comAgArea - PIA_IRR, digits = 6) != 0)) {
 # Currently irrigation water withdrawal:
 comAgWat <- collapseNames(read.magpie(paste0(inputdatapath, "comAgWat.mz"))[, , "withdrawal"][, , scenario][, , efp])
 comAgWat <- dimSums(comAgWat, dim = "crop")
-PIWW_IRR <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_IRR.mz"))[, , "wat_ag_ww"][, , scenario][, , efp])
+PIWW_IRR <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_IRR_wfGW.mz"))[, , "wat_ag_ww"][, , scenario][, , efp])
 # check:
 if (any(round(comAgWat - PIWW_IRR, digits = 6) != 0)) {
   warning("Something went wrong in the committed agricultural iteration of mrwater. 
@@ -112,14 +112,64 @@ if (any(round(comAgWat - PIWW_IRR, digits = 6) != 0)) {
 }
 
 # Irrigation potentials:
-# Potential irrigation water withdrawals (on current cropland) [in mio. m3]
-PIWW_CUR <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_CUR.mz"))[, , "wat_ag_ww"][, , scenario])
+# Potential irrigation water withdrawals (on current cropland) without fossil GW [in mio. m3]
+PIWW_CUR_wofGW <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_CUR_wofGW.mz"))[, , "wat_ag_ww"][, , scenario])
+PIWW_CUR_wfGW  <- collapseNames(read.magpie(paste0(inputdatapath, "PIWW_CUR_wfGW.mz"))[, , "wat_ag_ww"][, , scenario])
+PIWW_CUR_fGW   <- collapseNames(PIWW_CUR_wfGW[, , "off"] - PIWW_CUR_wofGW[, , "off"])
+
+if (any(PIWW_CUR_fGW < 0)) {
+  warning("fossil GW becomes negative. This should not be the case. Please double check. For now it is set to 0")
+  PIWW_CUR_fGW[PIWW_CUR_fGW < 0] <- 0
+}
+
+# For calculation of elasticity: use PIWW_CUR_wfGW (for now). To Do: probably needs to be wofGW
+PIWW_CUR <- PIWW_CUR_wfGW
+
 # Potentially irrigated area (on current cropland)
-PIA_CUR   <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_CUR.mz"))[, , scenario])
+PIA_CUR_wofGW  <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_CUR_wofGW.mz"))[, , scenario])
+PIA_CUR_wfGW   <- collapseNames(read.magpie(paste0(inputdatapath, "PIA_CUR_wfGW.mz"))[, , scenario])
+PIA_CUR_fGW    <- collapseNames(PIA_CUR_wfGW[, , "off"] - PIA_CUR_wofGW[, , "off"])
+
+if (any(PIA_CUR_fGW < 0)) {
+  warning("fossil GW becomes negative. This should not be the case. Please double check. For now it is set to 0")
+  PIA_CUR_fGW[PIA_CUR_fGW < 0] <- 0
+}
+
+# For calculation of transformation elasticity: use PIA_CUR_wfGW for now (to be consistent with previous outcome). To Do: update according to new logic
+PIA_CUR <- PIA_CUR_wfGW
 
 ```
 
+## Water Availability
+
+We distinguish renewable water availability (surface and shallow groundwater) and fossil groundwater and provide the volume in terms of cubic meters per hectare to SIMPLE-G (so that it can be combined with the area that is used in SIMPLE-G).
+
+```{r waterAvailability, include = FALSE, echo = FALSE}
+# Surface Water Availability (technical PIWW based on mrwater calculations using runoff (i.e. surface water and shallow (renewable) groundwater))
+# PIWW (mio. m3) / PIA (mio. ha) = RSW (m3/ha)
+RSW <- ifelse(PIA_CUR_wofGW[, , "off"] > 0,
+                PIWW_CUR_wofGW[, , "off"] / PIA_CUR_wofGW[, , "off"],
+              0)
+RSW <- collapseNames(RSW)
+
+# Fossil (non-renewable) Groundwater (calculated as "rest" (non-fulfilled water use) in mrwater)
+NGW <- ifelse(PIA_CUR_fGW > 0,
+                PIWW_CUR_fGW / PIA_CUR_fGW,
+              0)
+NGW <- collapseNames(NGW)
+
+# Combined surface and groundwater (renewable and non-renewable) withdrawals (in m3/ha)
+CSG <- ifelse(PIA_CUR[, , "off"] > 0, 
+                 PIWW_CUR[, , "off"] / PIA_CUR[, , "off"],
+               0)
+CSG <- collapseNames(CSG)
+  
+```
+
+
+
 ## Environmental Flow Requirements
+
 In the version/setting of mrwater that was used for this analysis, environmental flow requirements are calculated based on the the Variable Month Flow (VMF) Method following Pastor et al. (2014).
 
 The following graph shows the share of discharge per grid cell around the year 2010 that has to be reserved for the environment to keep aquatic and riverine ecosystems in a fair condition. The value ranges between 30% and 40% of discharge to be preserved for the environment.
@@ -233,8 +283,6 @@ knitr::include_graphics(paste0(outputdatapath, "\\PIWW_off.png"))
 knitr::include_graphics(paste0(outputdatapath, "\\PIWW_on.png"))
 ```
 
-Note to Iman: These two could be inserted as different asymptodes in SIMPLE-G. 
-
 The difference between the two scenarios (reflecting the change in the maximum water withdrawal volume) is shown in the following figure: 
 
 ```{r changeEFP, echo = FALSE, fig.cap = "Change in PIWW through EFP", out.width = '100%'}
@@ -251,7 +299,7 @@ efpShock <- ifelse(PIWW_CUR[, , "off"] > 0,
 efpShock[efpShock > 100] <- 100
 ```
 
-Note: Some areas see an extreme (up to 52577%) increase in PIWW. I have capped them to 100% (for visualization purposes). These are areas where under no protection, no water comes through anymore, so nothing can be used. Should it be capped at a different value/ not capped at all for the SIMPLE-G analysis?
+Note: Some areas see an extreme (up to 52577%) increase in PIWW. I have capped them to 100% (for visualization purposes). In SIMPLE-G, the positives are actually not included. The shock is only negative.
 
 ```{r EFPshockPlot, include = FALSE, echo = FALSE}
 min <- -100
@@ -278,6 +326,40 @@ The percentage change is displayed here:
 knitr::include_graphics(paste0(outputdatapath, "\\efpShock.png"))
 ```
 
+## Groundwater Shock
+
+Additionally to constraining surface water use to maintain environmental flow requirements surface water bodies, non-renewable groundwater use would have to be reduced to achieve sustainable water use. 
+
+```{r GWshock, include = FALSE, echo = TRUE}
+gwShock <- ifelse(PIWW_CUR_wfGW[, , "off"] > 0, 
+                     (PIWW_CUR_wofGW[, , "off"] - PIWW_CUR_wfGW[, , "off"]) / PIWW_CUR_wfGW[, , "off"] * 100,
+                   0)
+```
+
+```{r GWshockPlot, include = FALSE, echo = FALSE}
+min <- -100
+max <- 0
+legendlimit  <- c(min, max)
+legendbreaks <- seq(min, max, 25)
+legendcolor  <- rev(brewer.pal(length(legendbreaks)-1, "Reds"))
+
+# For visualization: locations where there is no change are set to NA
+gwShock[gwShock == 0] <- NA
+
+plotMap(x = gwShock,
+        name = "gwShock",
+        title = paste0("Percentage Change in PIWW through GW"),
+        outputfolder = outputdatapath,
+        ylim = ylim, xlim = xlim,
+        legendcolor = legendcolor, colNA = colNA,
+        legendlimit = legendlimit, legendbreaks = legendbreaks,
+        legendname = "")
+```
+
+The percentage change in total water usage required in particular locations is shown here: 
+```{r PercChangeGW, echo = FALSE, fig.cap = "Percentage Change in PIWW through EFP", out.width = '100%'}
+knitr::include_graphics(paste0(outputdatapath, "\\gwShock.png"))
+```
 
 ## Price Elasticity of Surface Water
 
@@ -360,6 +442,7 @@ The main outputs for a first analysis are:
 
 * surface water elasticity for baseline case (`swElasticity.nc`)
 * environmental flow policy shock as percentage change (note: capped) (`efpShockpc.nc`)
+* groundwater conservation shock as percentage change (`gwShockpc.nc`)
 
 The secondary outputs (depending on how we choose to implement it) are: 
 
@@ -377,11 +460,23 @@ write.magpie(epsilonON, file_name = paste0(outputdatapath, "swElasticityEFP.nc")
 # (percentage change of PIWW caused by EFP)
 write.magpie(efpShock, file_name = paste0(outputdatapath, "efpShockpc.nc"))
 
+# Groundwater Shock 
+# (percentage change of PIWW when excluding GW)
+write.magpie(gwShock, file_name = paste0(outputdatapath, "gwShockpc.nc"))
+
 # Current withdrawals
 write.magpie(PIWW_IRR, file_name = paste0(outputdatapath, "currentWW.nc"))
 
 # Potential withdrawals
 write.magpie(PIWW_CUR[, , "off"], file_name = paste0(outputdatapath, "PIWW.nc"))
 write.magpie(PIWW_CUR[, , "on"], file_name = paste0(outputdatapath, "PIWWefp.nc"))
+
+# Potential irrigation water (in m3/ha)
+# Renewable surface water (includes shallow groundwater)
+write.magpie(RSW, file_name = paste0(outputdatapath, "RSW.nc"))
+# Non-renewable (fossil) groundwater
+write.magpie(NGW, file_name = paste0(outputdatapath, "NGW.nc"))
+# Combined SW and GW
+write.magpie(CSG, file_name = paste0(outputdatapath, "CSG.nc"))
 
 ```
